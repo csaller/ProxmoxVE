@@ -9,12 +9,7 @@ variables() {
   var_install="${NSAPP}-install"     # sets the var_install variable by appending "-install" to the value of NSAPP.
   INTEGER='^[0-9]+([.][0-9]+)?$'     # it defines the INTEGER regular expression pattern.
   PVEHOST_NAME=$(hostname)           # gets the Proxmox Hostname and sets it to Uppercase
-  DIAGNOSTICS="yes"                  # sets the DIAGNOSTICS variable to "yes", used for the API call.
-  METHOD="default"                   # sets the METHOD variable to "default", used for the API call.
-  RANDOM_UUID="$(cat /proc/sys/kernel/random/uuid)" # generates a random UUID and sets it to the RANDOM_UUID variable.
 }
-
-source <(curl -s https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/api.func)
 
 # This function sets various color variables using ANSI escape codes for formatting text in the terminal.
 color() {
@@ -52,6 +47,7 @@ color() {
   BRIDGE="${TAB}🌉${TAB}${CL}"
   NETWORK="${TAB}📡${TAB}${CL}"
   GATEWAY="${TAB}🌐${TAB}${CL}"
+  DNS="${TAB}🔗${TAB}${CL}"
   DISABLEIPV6="${TAB}🚫${TAB}${CL}"
   DEFAULT="${TAB}⚙️${TAB}${CL}"
   MACADDRESS="${TAB}🔗${TAB}${CL}"
@@ -69,14 +65,12 @@ catch_errors() {
 
 # This function is called when an error occurs. It receives the exit code, line number, and command that caused the error, and displays an error message.
 error_handler() {
-  source /dev/stdin <<< $(wget -qLO - https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/api.func)																															   
   if [ -n "$SPINNER_PID" ] && ps -p $SPINNER_PID > /dev/null; then kill $SPINNER_PID > /dev/null; fi
   printf "\e[?25h"
   local exit_code="$?"
   local line_number="$1"
   local command="$2"
   local error_message="${RD}[ERROR]${CL} in line ${RD}$line_number${CL}: exit code ${RD}$exit_code${CL}: while executing command ${YW}$command${CL}"
-  post_update_to_api "failed" "${command}"									  
   echo -e "\n$error_message\n"
 }
 
@@ -242,7 +236,7 @@ update_motd_ip() {
 
 # Function to download & save header files
 get_header() {
-  local app_name=$(echo ${APP,,} | tr -d ' ') 
+  local app_name=$(echo ${APP,,} | tr -d ' ')
   local header_url="https://github.com/community-scripts/ProxmoxVE/raw/main/ct/headers/${app_name}"
   local local_header_path="/usr/local/community-scripts/headers/${app_name}"
 
@@ -261,7 +255,7 @@ get_header() {
 
 # This function sets the APP-Name into an ASCII Header in Slant, figlet needed on proxmox main node.
 header_info() {
-  local app_name=$(echo ${APP,,} | tr -d ' ') 
+  local app_name=$(echo ${APP,,} | tr -d ' ')
   local header_content
 
   # Download & save Header-File locally
@@ -297,23 +291,25 @@ base_settings() {
   CORE_COUNT="1"
   RAM_SIZE="1024"
   VERBOSE="${1:-no}"
-  PW=""
+  PW=$DEFAULT_CT_PASSWD
   CT_ID=$NEXTID
   HN=$NSAPP
   BRG="vmbr0"
-  NET="dhcp"
-  GATE=""
+  NET="192.168.0.$CT_ID/24"
+  GATE="192.168.0.1"
   APT_CACHER=""
   APT_CACHER_IP=""
-  DISABLEIP6="no"
+  DISABLEIP6="yes"
   MTU=""
   SD=""
   NS=""
   MAC=""
   VLAN=""
-  SSH="no"
+  SSH="yes"
   SSH_AUTHORIZED_KEY=""
   TAGS="community-script;"
+  SETDNS="yes"
+  NGINX_DNS="$HN.csaller.dev"
 
   # Override default settings with variables from ct script
   CT_TYPE=${var_unprivileged:-$CT_TYPE}
@@ -322,6 +318,7 @@ base_settings() {
   RAM_SIZE=${var_ram:-$RAM_SIZE}
   VERB=${var_verbose:-$VERBOSE}
   TAGS="${TAGS}${var_tags:-}"
+  APP_PORT=${var_port:-$APP_PORT}
 
   # Since these 2 are only defined outside of default_settings function, we add a temporary fallback. TODO: To align everything, we should add these as constant variables (e.g. OSTYPE and OSVERSION), but that would currently require updating the default_settings function for all existing scripts
   if [ -z "$var_os" ]; then
@@ -329,6 +326,20 @@ base_settings() {
   fi
   if [ -z "$var_version" ]; then
     var_version="12"
+  fi
+}
+
+ask_id() {
+  if BASE_CT_ID=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Container ID" 8 58 $NEXTID --title "CONTAINER ID" 3>&1 1>&2 2>&3); then
+    if [ -z "$BASE_CT_ID" ]; then
+      CT_ID="$NEXTID"
+      NET="192.168.0.$CT_ID/24"
+    else
+      CT_ID=$BASE_CT_ID
+      NET="192.168.0.$CT_ID/24"
+    fi
+  else
+    exit
   fi
 }
 
@@ -348,6 +359,7 @@ echo_default() {
   echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}${CORE_COUNT}${CL}"
   echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}${RAM_SIZE} MiB${CL}"
   echo -e "${CONTAINERID}${BOLD}${DGN}Container ID: ${BGN}${CT_ID}${CL}"
+  echo -e "${DNS}${BOLD}${DGN}NGINX domain: ${BGN}$NGINX_DNS${CL}"
   if [ "$VERB" == "yes" ]; then
     echo -e "${SEARCH}${BOLD}${DGN}Verbose Mode: ${BGN}Enabled${CL}"
   fi
@@ -527,16 +539,16 @@ advanced_settings() {
   done
 
   while true; do
-    if PW1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "\nSet Root Password (needed for root ssh access)" 9 58 --title "PASSWORD (leave blank for automatic login)" 3>&1 1>&2 2>&3); then
+    if PW1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "\nSet Root Password (needed for root ssh access)" 9 58 $DEFAULT_CT_PASSWD --title "PASSWORD (leave blank for automatic login)" 3>&1 1>&2 2>&3); then
       if [[ ! -z "$PW1" ]]; then
         if [[ "$PW1" == *" "* ]]; then
           whiptail --msgbox "Password cannot contain spaces. Please try again." 8 58
         elif [ ${#PW1} -lt 5 ]; then
           whiptail --msgbox "Password must be at least 5 characters long. Please try again." 8 58
         else
-          if PW2=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "\nVerify Root Password" 9 58 --title "PASSWORD VERIFICATION" 3>&1 1>&2 2>&3); then
+          if PW2=$(whiptail --backtitle "Proxmox VE Helper Scripts" --passwordbox "\nVerify Root Password" 9 58 $DEFAULT_CT_PASSWD --title "PASSWORD VERIFICATION" 3>&1 1>&2 2>&3); then
             if [[ "$PW1" == "$PW2" ]]; then
-              PW="-password $PW1"
+              PW="$PW1"
               echo -e "${VERIFYPW}${BOLD}${DGN}Root Password: ${BGN}********${CL}"
               break
             else
@@ -616,19 +628,8 @@ advanced_settings() {
     exit_script
   fi
 
-  if BRG=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Bridge" 8 58 vmbr0 --title "BRIDGE" 3>&1 1>&2 2>&3); then
-    if [ -z "$BRG" ]; then
-      BRG="vmbr0"
-      echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}$BRG${CL}"
-    else
-      echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}$BRG${CL}"
-    fi
-  else
-    exit_script
-  fi
-
   while true; do
-    NET=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Static IPv4 CIDR Address (/24)" 8 58 dhcp --title "IP ADDRESS" 3>&1 1>&2 2>&3)
+    NET=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Static IPv4 CIDR Address (/24)" 8 58 "192.168.0.$CT_ID/24" --title "IP ADDRESS" 3>&1 1>&2 2>&3)
     exit_status=$?
     if [ $exit_status -eq 0 ]; then
       if [ "$NET" = "dhcp" ]; then
@@ -649,13 +650,13 @@ advanced_settings() {
 
   if [ "$NET" != "dhcp" ]; then
     while true; do
-      GATE1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter gateway IP address" 8 58 --title "Gateway IP" 3>&1 1>&2 2>&3)
+      GATE1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Enter gateway IP address" 8 58 "192.168.0.1" --title "Gateway IP" 3>&1 1>&2 2>&3)
       if [ -z "$GATE1" ]; then
         whiptail --backtitle "Proxmox VE Helper Scripts" --msgbox "Gateway IP address cannot be empty" 8 58
       elif [[ ! "$GATE1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
         whiptail --backtitle "Proxmox VE Helper Scripts" --msgbox "Invalid IP address format" 8 58
       else
-        GATE=",gw=$GATE1"
+        GATE="$GATE1"
         echo -e "${GATEWAY}${BOLD}${DGN}Gateway IP Address: ${BGN}$GATE1${CL}"
         break
       fi
@@ -665,84 +666,34 @@ advanced_settings() {
     echo -e "${GATEWAY}${BOLD}${DGN}Gateway IP Address: ${BGN}Default${CL}"
   fi
 
-  if [ "$var_os" == "alpine" ]; then
-    APT_CACHER=""
-    APT_CACHER_IP=""
+  if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "Domain" --yesno "Do you want to setup DNS?" 10 58); then
+    SETDNS="yes"
+    while true; do
+      if APP_HOST1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set App domain" 8 58 "$CT_NAME.csaller" --title "HOSTNAME" 3>&1 1>&2 2>&3); then
+        exit_status=$?
+        if [ $exit_status -eq 0 ]; then
+          if [ -z "$APP_HOST1" ]; then
+            NGINX_DNS="$CT_NAME.csaller.dev"
+            INTERNAL_DNS="$CT_NAME.csaller.local"
+            echo -e "${DNS}${BOLD}${DGN}NGINX domain: ${BGN}$NGINX_DNS${CL}"
+            echo -e "${DNS}${BOLD}${DGN}Local domain: ${BGN}$INTERNAL_DNS${CL}"
+            break
+          else
+            NGINX_DNS="$APP_HOST1.dev"
+            INTERNAL_DNS="$APP_HOST1.local"
+            echo -e "${DNS}${BOLD}${DGN}NGINX domain: ${BGN}$NGINX_DNS${CL}"
+            echo -e "${DNS}${BOLD}${DGN}Local domain: ${BGN}$INTERNAL_DNS${CL}"
+            break
+          fi
+        else
+          exit_script
+        fi
+      else
+        exit_script
+      fi
+    done
   else
-    if APT_CACHER_IP=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set APT-Cacher IP (leave blank for none)" 8 58 --title "APT-Cacher IP" 3>&1 1>&2 2>&3); then
-      APT_CACHER="${APT_CACHER_IP:+yes}"
-      echo -e "${NETWORK}${BOLD}${DGN}APT-Cacher IP Address: ${BGN}${APT_CACHER_IP:-Default}${CL}"
-    else
-      exit_script
-    fi
-  fi
-
-  if (whiptail --backtitle "Proxmox VE Helper Scripts" --defaultno --title "IPv6" --yesno "Disable IPv6?" 10 58); then
-    DISABLEIP6="yes"
-  else
-    DISABLEIP6="no"
-  fi
-  echo -e "${DISABLEIPV6}${BOLD}${DGN}Disable IPv6: ${BGN}$DISABLEIP6${CL}"
-
-  if MTU1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Interface MTU Size (leave blank for default [1500])" 8 58 --title "MTU SIZE" 3>&1 1>&2 2>&3); then
-    if [ -z $MTU1 ]; then
-      MTU1="Default"
-      MTU=""
-    else
-      MTU=",mtu=$MTU1"
-    fi
-    echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}$MTU1${CL}"
-  else
-    exit_script
-  fi
-
-  if SD=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a DNS Search Domain (leave blank for HOST)" 8 58 --title "DNS Search Domain" 3>&1 1>&2 2>&3); then
-    if [ -z $SD ]; then
-      SX=Host
-      SD=""
-    else
-      SX=$SD
-      SD="-searchdomain=$SD"
-    fi
-    echo -e "${SEARCH}${BOLD}${DGN}DNS Search Domain: ${BGN}$SX${CL}"
-  else
-    exit_script
-  fi
-
-  if NX=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a DNS Server IP (leave blank for HOST)" 8 58 --title "DNS SERVER IP" 3>&1 1>&2 2>&3); then
-    if [ -z $NX ]; then
-      NX=Host
-      NS=""
-    else
-      NS="-nameserver=$NX"
-    fi
-    echo -e "${NETWORK}${BOLD}${DGN}DNS Server IP Address: ${BGN}$NX${CL}"
-  else
-    exit_script
-  fi
-
-  if MAC1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a MAC Address(leave blank for generated MAC)" 8 58 --title "MAC ADDRESS" 3>&1 1>&2 2>&3); then
-    if [ -z $MAC1 ]; then
-      MAC1="Default"
-      MAC=""
-    else
-      MAC=",hwaddr=$MAC1"
-      echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}$MAC1${CL}"
-    fi
-  else
-    exit_script
-  fi
-
-  if VLAN1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Vlan(leave blank for no VLAN)" 8 58 --title "VLAN" 3>&1 1>&2 2>&3); then
-    if [ -z $VLAN1 ]; then
-      VLAN1="Default"
-      VLAN=""
-    else
-      VLAN=",tag=$VLAN1"
-    fi
-    echo -e "${VLANTAG}${BOLD}${DGN}Vlan: ${BGN}$VLAN1${CL}"
-  else
-    exit_script
+    SETDNS="no"
   fi
 
   if ADV_TAGS=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Custom Tags?[If you remove all, there will be no tags!]" 8 58 ${TAGS} --title "Advanced Tags" 3>&1 1>&2 2>&3); then
@@ -795,74 +746,6 @@ advanced_settings() {
   fi
 }
 
-diagnostics_check(){
-  if ! [ -d "/usr/local/community-scripts" ]; then
-      mkdir -p /usr/local/community-scripts
-    fi
-
-    if ! [ -f "/usr/local/community-scripts/diagnostics" ]; then
-      if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "DIAGNOSTICS" --yesno "Send Diagnostics of LXC Installation?\n\n(This only transmits data without user data, just RAM, CPU, LXC name, ...)" 10 58); then
-          cat <<EOF>/usr/local/community-scripts/diagnostics
-DIAGNOSTICS=yes
-
-#This file is used to store the diagnostics settings for the Community-Scripts API.
-#https://github.com/community-scripts/ProxmoxVE/discussions/1836
-#Your diagnostics will be sent to the Community-Scripts API for troubleshooting/statistical purposes.
-#You can review the data at https://community-scripts.github.io/ProxmoxVE/data
-#If you do not wish to send diagnostics, please set the variable 'DIAGNOSTICS' to "no" in /usr/local/community-scripts/diagnostics, or use the menue.
-#This will disable the diagnostics feature.
-#To send diagnostics, set the variable 'DIAGNOSTICS' to "yes" in /usr/local/community-scripts/diagnostics, or use the menue.
-#This will enable the diagnostics feature.
-#The following information will be sent:
-#"ct_type"
-#"disk_size"
-#"core_count"
-#"ram_size"
-#"os_type"
-#"os_version"
-#"disableip6"
-#"nsapp"
-#"method"
-#"pve_version"
-#"status"
-#If you have any concerns, please review the source code at /misc/build.func
-EOF
-      DIAGNOSTICS="yes"
-    else
-      cat <<EOF >/usr/local/community-scripts/diagnostics
-DIAGNOSTICS=no
-
-#This file is used to store the diagnostics settings for the Community-Scripts API.
-#https://github.com/community-scripts/ProxmoxVE/discussions/1836
-#Your diagnostics will be sent to the Community-Scripts API for troubleshooting/statistical purposes.
-#You can review the data at https://community-scripts.github.io/ProxmoxVE/data
-#If you do not wish to send diagnostics, please set the variable 'DIAGNOSTICS' to "no" in /usr/local/community-scripts/diagnostics, or use the menue.
-#This will disable the diagnostics feature.
-#To send diagnostics, set the variable 'DIAGNOSTICS' to "yes" in /usr/local/community-scripts/diagnostics, or use the menue.
-#This will enable the diagnostics feature.
-#The following information will be sent:
-#"ct_type"
-#"disk_size"
-#"core_count"
-#"ram_size"
-#"os_type"
-#"os_version"
-#"disableip6"
-#"nsapp"
-#"method"
-#"pve_version"
-#"status"
-#If you have any concerns, please review the source code at /misc/build.func
-EOF
-      DIAGNOSTICS="no"
-    fi
-  else
-    DIAGNOSTICS=$(awk -F '=' '/^DIAGNOSTICS/ {print $2}' /usr/local/community-scripts/diagnostics)
-
-  fi
-
-}
-
 install_script() {
   pve_check
   shell_check
@@ -870,7 +753,6 @@ install_script() {
   arch_check
   ssh_check
   maxkeys_check
-  diagnostics_check
 
   if systemctl is-active -q ping-instances.service; then
     systemctl -q stop ping-instances.service
@@ -885,8 +767,7 @@ install_script() {
       "1" "Default Settings" \
       "2" "Default Settings (with verbose)" \
       "3" "Advanced Settings" \
-      "4" "Diagnostic Settings" \
-      "5" "Exit" --nocancel --default-item "1" 3>&1 1>&2 2>&3)
+      "4" "Exit" --nocancel --default-item "1" 3>&1 1>&2 2>&3)
 
     if [ $? -ne 0 ]; then
       echo -e "${CROSS}${RD} Menu canceled. Exiting.${CL}"
@@ -898,8 +779,8 @@ install_script() {
       header_info
       echo -e "${DEFAULT}${BOLD}${BL}Using Default Settings on node $PVEHOST_NAME${CL}"
       VERB="no"
-      METHOD="default"
       base_settings "$VERB"
+      ask_id
       echo_default
       break
       ;;
@@ -907,37 +788,18 @@ install_script() {
       header_info
       echo -e "${DEFAULT}${BOLD}${BL}Using Default Settings on node $PVEHOST_NAME (${SEARCH}Verbose)${CL}"
       VERB="yes"
-      METHOD="default"
       base_settings "$VERB"
+      ask_id
       echo_default
       break
       ;;
     3)
       header_info
       echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings on node $PVEHOST_NAME${CL}"
-      METHOD="advanced"
-      base_settings
       advanced_settings
       break
       ;;
-     4)
-        if [[ $DIAGNOSTICS == "yes" ]]; then
-          if whiptail --backtitle "Proxmox VE Helper Scripts" --title "DIAGNOSTICS SETTINGS" --yesno "Send Diagnostics of LXC Installation?\n\nCurrent setting: ${DIAGNOSTICS}" 10 58 \
-          --yes-button "No" --no-button "Back" ; then
-            DIAGNOSTICS="no"
-            sed -i 's/^DIAGNOSTICS=.*/DIAGNOSTICS=no/' /usr/local/community-scripts/diagnostics
-            whiptail --backtitle "Proxmox VE Helper Scripts" --title "DIAGNOSTICS SETTINGS" --msgbox "Diagnostics settings changed to ${DIAGNOSTICS}." 8 58
-          fi
-        else
-          if whiptail --backtitle "Proxmox VE Helper Scripts" --title "DIAGNOSTICS SETTINGS" --yesno "Send Diagnostics of LXC Installation?\n\nCurrent setting: ${DIAGNOSTICS}" 10 58 \
-          --yes-button "Yes" --no-button "Back" ; then
-            DIAGNOSTICS="yes"
-            sed -i 's/^DIAGNOSTICS=.*/DIAGNOSTICS=yes/' /usr/local/community-scripts/diagnostics
-            whiptail --backtitle "Proxmox VE Helper Scripts" --title "DIAGNOSTICS SETTINGS" --msgbox "Diagnostics settings changed to ${DIAGNOSTICS}." 8 58
-          fi
-        fi        
-        ;;
-    5)
+    4)
       echo -e "${CROSS}${RD}Exiting.${CL}"
       exit 0
       ;;
@@ -1011,7 +873,7 @@ start() {
 
 # This function collects user settings and integrates all the collected information.
 build_container() {
-  #  if [ "$VERB" == "yes" ]; then set -x; fi
+  if [ "$VERB" == "yes" ]; then set -x; fi
 
   if [ "$CT_TYPE" == "1" ]; then
     FEATURES="keyctl=1,nesting=1"
@@ -1019,27 +881,22 @@ build_container() {
     FEATURES="nesting=1"
   fi
 
-  if [[ $DIAGNOSTICS == "yes" ]]; then
-    post_to_api
-  fi
-
   TEMP_DIR=$(mktemp -d)
   pushd $TEMP_DIR >/dev/null
   if [ "$var_os" == "alpine" ]; then
-    export FUNCTIONS_FILE_PATH="$(curl -s https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/alpine-install.func)"
+    export FUNCTIONS_FILE_PATH="$(curl -s https://raw.githubusercontent.com/csaller/ProxmoxVE/main/misc/alpine-install.func)"
   else
-    export FUNCTIONS_FILE_PATH="$(curl -s https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/install.func)"
+    export FUNCTIONS_FILE_PATH="$(curl -s https://raw.githubusercontent.com/csaller/ProxmoxVE/main/misc/install.func)"
   fi
-  export RANDOM_UUID="$RANDOM_UUID"
   export CACHER="$APT_CACHER"
   export CACHER_IP="$APT_CACHER_IP"
   export tz="$timezone"
-  export DISABLEIPV6="$DISABLEIP6"
+  export DISABLEIPV6="yes"
   export APPLICATION="$APP"
   export app="$NSAPP"
   export PASSWORD="$PW"
   export VERBOSE="$VERB"
-  export SSH_ROOT="${SSH}"
+  export SSH_ROOT="yes"
   export SSH_AUTHORIZED_KEY
   export CTID="$CT_ID"
   export CTTYPE="$CT_TYPE"
@@ -1050,17 +907,14 @@ build_container() {
     -features $FEATURES
     -hostname $HN
     -tags $TAGS
-    $SD
-    $NS
-    -net0 name=eth0,bridge=$BRG$MAC,ip=$NET$GATE$VLAN$MTU
+    -net0 name=eth0,bridge=vmbr0,ip=$NET,gw=$GATE
     -onboot 1
     -cores $CORE_COUNT
     -memory $RAM_SIZE
     -unprivileged $CT_TYPE
-    $PW
-  "
-  # This executes create_lxc.sh and creates the container and .conf file
-  bash -c "$(wget -qLO - https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/create_lxc.sh)" || exit $?
+    -password $PW
+  " # This executes create_lxc.sh and creates the container and .conf file
+  bash -c "$(wget -qLO - https://raw.githubusercontent.com/csaller/ProxmoxVE/main/ct/create_lxc.sh)" || exit
 
   LXC_CONFIG=/etc/pve/lxc/${CTID}.conf
   if [ "$CT_TYPE" == "0" ]; then
@@ -1122,7 +976,12 @@ http://dl-cdn.alpinelinux.org/alpine/latest-stable/community
 EOF'
     pct exec "$CTID" -- ash -c "apk add bash >/dev/null"
   fi
-  lxc-attach -n "$CTID" -- bash -c "$(wget -qLO - https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/install/$var_install.sh)" || exit $?
+  lxc-attach -n "$CTID" -- bash -c "$(wget -qLO - https://raw.githubusercontent.com/csaller/ProxmoxVE/main/install/$var_install.sh)" || exit
+
+  if [ "$SETDNS" == "yes" ]; then
+    register_nginx
+    #  register_local
+  fi
 
 }
 
@@ -1135,7 +994,7 @@ description() {
     cat <<EOF
 <div align='center'>
   <a href='https://Helper-Scripts.com' target='_blank' rel='noopener noreferrer'>
-    <img src='https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/images/logo-81x112.png' alt='Logo' style='width:81px;height:112px;'/>
+    <img src='https://raw.githubusercontent.com/csaller/ProxmoxVE/main/misc/images/logo-81x112.png' alt='Logo' style='width:81px;height:112px;'/>
   </a>
 
   <h2 style='font-size: 24px; margin: 20px 0;'>${APP} LXC</h2>
@@ -1168,36 +1027,36 @@ EOF
   if [[ -f /etc/systemd/system/ping-instances.service ]]; then
     systemctl start ping-instances.service
   fi
-  
-  post_update_to_api "done" "none"
 }
 
+register_nginx() {
+  # Configure NGINX Proxy Manager using the API
 
-exit_script() {
-  exit_code=$?  # Capture the exit status of the last executed command
-  #200 exit codes indicate error in create_lxc.sh
-  #100 exit codes indicate error in install.func
+  IP=$(echo "$NET" | awk -F'/' '{print $1}')
 
-if [ $exit_code -ne 0 ]; then  # Check if exit code is nonzero
-    case $exit_code in
-        200) post_update_to_api "failed" "create_lxc.sh: Error during LXC creation" ;;
-        201) post_update_to_api "failed" "create_lxc.sh Invalid Storage class" ;;
-        202) post_update_to_api "failed" "create_lxc.sh Invalid Menu aborted" ;;
-        203) post_update_to_api "failed" "create_lxc.sh CTID was unset" ;;
-        204) post_update_to_api "failed" "create_lxc.sh PCT_OSTYPE was unset" ;;
-        205) post_update_to_api "failed" "create_lxc.sh ID cannot be less than 100" ;;
-        206) post_update_to_api "failed" "create_lxc.sh ID already in use" ;;
-        207) post_update_to_api "failed" "create_lxc.sh Template not found" ;;
-        208) post_update_to_api "failed" "create_lxc.sh Error downloading template" ;;
-        101) post_update_to_api "failed" "create_lxc.sh No Network connection" ;;
-        *)   post_update_to_api "failed" "Unknown error, exit code: $exit_code" ;;
-    esac
-fi
+  NPM_PAYLOAD=$(cat <<EOF
+{"domain_names":["$NGINX_DNS"],"forward_scheme":"http","forward_host":"$IP","forward_port":"$APP_PORT","caching_enabled":true,"block_exploits":true,"allow_websocket_upgrade":true,"certificate_id":7,"ssl_forced":true,"http2_support":true,"hsts_enabled":true}
+EOF
+  )
+
+  NPM_ENDPOINT=nginx.csaller.dev
+
+  msg_info "Configuring NGINX Proxy Manager"
+
+  curl -sX POST "https://$NPM_ENDPOINT/api/nginx/proxy-hosts" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $NGINX_TOKEN" \
+    -d $NPM_PAYLOAD >/dev/null
+
+  msg_ok "NGINX Proxy Manager Configured"
 }
 
+# register_local() {
+#   # Configure Techtinium DNS using the API
 
-trap 'exit_script' EXIT
-trap 'post_update_to_api "failed" "$BASH_COMMAND"' ERR
-trap 'post_update_to_api "failed" "INTERRUPTED"' SIGINT 
-trap 'post_update_to_api "failed" "TERMINATED"' SIGTERM
+#   msg_info "Configuring Local DNS"
 
+#   # Register Local DNS
+
+#   msg_ok "Local DNS Configured"
+# }

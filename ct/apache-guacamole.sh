@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
-source <(curl -s https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
+source <(curl -s https://raw.githubusercontent.com/csaller/ProxmoxVE/main/misc/build.func)
 # Copyright (c) 2021-2025 community-scripts ORG
 # Author: Michel Roegl-Brunner (michelroegl-brunner)
 # License: | MIT https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
 # Source: https://guacamole.apache.org/
 
+#App Default Values
 APP="Apache-Guacamole"
-var_tags="webserver;remote"
+TAGS="webserver;remote"
 var_disk="4"
 var_cpu="1"
 var_ram="2048"
 var_os="debian"
 var_version="12"
 var_unprivileged="1"
+var_port="8080"
 
+# App Output & Base Settings
 header_info "$APP"
+base_settings
+
+# Core
 variables
 color
 catch_errors
