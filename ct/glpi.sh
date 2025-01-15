@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-source <(curl -s https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
+source <(curl -s https://raw.githubusercontent.com/csaller/ProxmoxVE/main/misc/build.func)
+
 # Copyright (c) 2021-2025 community-scripts ORG
 # Author: Nícolas Pastorello (opastorello)
 # License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
 # Source: https://www.glpi-project.org/
 
+# App Default Values
 APP="GLPI"
 var_tags="asset-management;foss"
 var_cpu="2"
@@ -13,8 +15,13 @@ var_disk="10"
 var_os="debian"
 var_version="12"
 var_unprivileged="1"
+var_port="80"
 
+# App Output & Base Settings
 header_info "$APP"
+base_settings
+
+# Core
 variables
 color
 catch_errors

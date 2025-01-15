@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-source <(curl -s https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
+source <(curl -s https://raw.githubusercontent.com/csaller/ProxmoxVE/main/misc/build.func)
 # Source: https://github.com/gristlabs/grist-core
 
 APP="Grist"
@@ -10,6 +10,7 @@ var_disk="6"
 var_os="debian"
 var_version="12"
 var_unprivileged="1"
+var_port="8484"
 
 header_info "$APP"
 variables
