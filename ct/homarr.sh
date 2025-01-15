@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-source <(curl -s https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
+source <(curl -s https://raw.githubusercontent.com/csaller/ProxmoxVE/main/misc/build.func)
 # Copyright (c) 2021-2025 tteck
 # Author: tteck (tteckster) | Co-Author: MickLesk (Canbiz) | Co-Author: CrazyWolf13
 # License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
@@ -13,6 +13,7 @@ var_disk="8"
 var_os="debian"
 var_version="12"
 var_unprivileged="1"
+var_port="7575"
 
 header_info "$APP"
 
@@ -71,7 +72,7 @@ fi
     cp /opt/homarr/packages/cli/cli.cjs /opt/homarr/apps/cli/cli.cjs
     echo $'#!/bin/bash\ncd /opt/homarr/apps/cli && node ./cli.cjs "$@"' > /usr/bin/homarr
     chmod +x /usr/bin/homarr
-    
+
     mkdir /opt/homarr/build
     cp ./node_modules/better-sqlite3/build/Release/better_sqlite3.node ./build/better_sqlite3.node
     echo "${RELEASE}" >/opt/${APP}_version.txt
