@@ -9,7 +9,7 @@ const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
 
 export const navbarLinks = [
 	{
-		href: `https://github.com/community-scripts/${basePath}`,
+		href: `https://github.com/csaller/${basePath}`,
 		event: "Github",
 		icon: <FaGithub className="h-4 w-4" />,
 		text: "Github",
